@@ -10,6 +10,8 @@ def get_llm() -> BaseChatModel:
         return ChatAnthropic(
             model_name="claude-3-5-sonnet-20241022",
             api_key=settings.ANTHROPIC_API_KEY,
+            timeout=None,
+            stop=None,
         )
 
     if settings.OPENAI_API_KEY:
