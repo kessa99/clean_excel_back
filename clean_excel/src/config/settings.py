@@ -1,10 +1,11 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    ANTHROPIC_API_KEY: str | None = None
-    OPENAI_API_KEY: str | None = None
-    MISTRAL_API_KEY: str | None = None
+    ANTHROPIC_API_KEY: SecretStr | None = None
+    OPENAI_API_KEY: SecretStr | None = None
+    MISTRAL_API_KEY: SecretStr | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

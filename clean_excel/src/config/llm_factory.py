@@ -8,7 +8,7 @@ def get_llm() -> BaseChatModel:
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
-            model="claude-3-5-sonnet-20241022",
+            model_name="claude-3-5-sonnet-20241022",
             api_key=settings.ANTHROPIC_API_KEY,
         )
 
@@ -24,7 +24,7 @@ def get_llm() -> BaseChatModel:
         from langchain_mistralai import ChatMistralAI
 
         return ChatMistralAI(
-            model="mistral-large-latest",
+            model_name="mistral-large-latest",
             api_key=settings.MISTRAL_API_KEY,
         )
 
