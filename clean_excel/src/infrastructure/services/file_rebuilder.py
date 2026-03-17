@@ -2,21 +2,55 @@ from io import BytesIO
 
 import pandas as pd
 
-from infrastructure.schemas import Anomalie
+from infrastructure.schemas import Anomalie, DecisionHumain
 
 
 def reconstruire_fichier(df: pd.DataFrame, anomalies: list[Anomalie]) -> pd.DataFrame:
     df = df.copy()
 
     for anomalie in anomalies:
-        if anomalie.colonne_probable is None or anomalie.confiance <= 0.7:
+        if anomalie.confiance <= 0.7:
             continue
 
-        if anomalie.colonne_probable not in df.columns:
-            df[anomalie.colonne_probable] = None
+        if anomalie.colonne_probable is not None:
+            if anomalie.colonne_probable not in df.columns:
+                df[anomalie.colonne_probable] = None
+            df.at[anomalie.ligne, anomalie.colonne_probable] = anomalie.valeur
 
-        df.at[anomalie.ligne, anomalie.colonne_probable] = anomalie.valeur
         df.at[anomalie.ligne, anomalie.colonne_actuelle] = None
+
+    return df
+
+
+def reconstruire_avec_decisions(
+    df: pd.DataFrame,
+    anomalies: list[Anomalie],
+    decisions: list[DecisionHumain],
+) -> pd.DataFrame:
+    df = df.copy()
+
+    decisions_map = {(d.ligne, d.colonne_actuelle): d for d in decisions}
+
+    for anomalie in anomalies:
+        if anomalie.necessite_confirmation:
+            decision = decisions_map.get((anomalie.ligne, anomalie.colonne_actuelle))
+            if decision is None or decision.action == "garder":
+                continue
+            if decision.action == "supprimer":
+                df.at[anomalie.ligne, anomalie.colonne_actuelle] = None
+            elif decision.action == "deplacer" and decision.colonne_cible:
+                if decision.colonne_cible not in df.columns:
+                    df[decision.colonne_cible] = None
+                df.at[anomalie.ligne, decision.colonne_cible] = anomalie.valeur
+                df.at[anomalie.ligne, anomalie.colonne_actuelle] = None
+        else:
+            if anomalie.confiance <= 0.7:
+                continue
+            if anomalie.colonne_probable is not None:
+                if anomalie.colonne_probable not in df.columns:
+                    df[anomalie.colonne_probable] = None
+                df.at[anomalie.ligne, anomalie.colonne_probable] = anomalie.valeur
+            df.at[anomalie.ligne, anomalie.colonne_actuelle] = None
 
     return df
 

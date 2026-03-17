@@ -26,7 +26,7 @@ async def lire_fichier(file: UploadFile) -> pd.DataFrame:
 def extraire_echantillon(df: pd.DataFrame) -> dict:
     return {
         "headers": df.columns.tolist(),
-        "lignes": df.head(50).astype(str).values.tolist(),
+        "lignes": df.head(20).astype(str).values.tolist(),
     }
 
 
