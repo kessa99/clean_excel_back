@@ -1,27 +1,13 @@
 from fastapi import APIRouter, UploadFile, File
 
-from infrastructure.schemas import ResultatAnalyse
-from infrastructure.services import (
-    lire_fichier,
-    extraire_echantillon,
-    detecter_schema,
-    detecter_anomalies,
-)
+from infrastructure.schemas import ResultatAnalyse, FichierSchema
+from infrastructure.services import lire_fichier, detecter_schema_pandas
 
 router = APIRouter()
 
 
-@router.post("/api/upload", response_model=ResultatAnalyse)
+@router.post("/api/upload", response_model=FichierSchema)
 async def upload(file: UploadFile = File(...)):
     df = await lire_fichier(file)
-    echantillon = extraire_echantillon(df)
-    schema = detecter_schema(echantillon)
-    anomalies = detecter_anomalies(df, schema)
-
-    return ResultatAnalyse(
-        total_lignes=len(df),
-        total_colonnes=len(df.columns),
-        total_anomalies=len(anomalies),
-        schema_detecte=schema,
-        anomalies=anomalies,
-    )
+    schema = detecter_schema_pandas(df)
+    return schema

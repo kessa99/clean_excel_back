@@ -15,7 +15,7 @@ _TYPE_VALIDATORS = {
     "texte": lambda v: _est_numerique_strict(v),
     "email": lambda v: not _est_email(v),
     "telephone": lambda v: not _est_telephone(v),
-    "date": lambda v: False,  # laissé à l'IA — trop ambigu pour Pandas
+    "date": lambda v: False,
 }
 
 
@@ -28,7 +28,6 @@ def _est_numerique(valeur: str) -> bool:
 
 
 def _est_numerique_strict(valeur: str) -> bool:
-    """Détecte un float pur dans une colonne texte (ex: 75000.0)."""
     return bool(re.fullmatch(r"-?\d+(\.\d+)?", valeur.strip()))
 
 
@@ -40,56 +39,42 @@ def _est_telephone(valeur: str) -> bool:
     return bool(re.fullmatch(r"[\d\s\+\-\.\(\)]{7,15}", valeur.strip()))
 
 
-_PROMPT_DESTINATIONS = PromptTemplate(
-    input_variables=["schema", "anomalies"],
+_PROMPT_FUSIONNE = PromptTemplate(
+    input_variables=["schema", "anomalies_evidentes", "lignes_ambigues"],
     template="""Tu es un expert en qualité de données.
 
-Voici le schéma du fichier. Pour chaque colonne : son nom, son type attendu, sa description, et des exemples de valeurs valides si disponibles :
+Voici le schéma du fichier. Pour chaque colonne : nom, type attendu, description et exemples de valeurs valides :
 {schema}
 
-Voici des valeurs détectées comme mal placées dans leurs colonnes. En te basant sur le schéma et les exemples fournis, identifie dans quelle colonne chaque valeur devrait se trouver.
-{anomalies}
+TÂCHE 1 — Ces valeurs ont été détectées comme incompatibles avec leur colonne.
+Pour chacune, identifie la colonne du schéma où elle devrait se trouver (ou null si vraiment inconnue) :
+{anomalies_evidentes}
 
-Retourne UNIQUEMENT un tableau JSON. N'ajoute aucun texte avant ou après.
+TÂCHE 2 — Analyse ces lignes et détecte toute valeur mal placée dans sa colonne :
+{lignes_ambigues}
 
-Format attendu :
-[
-  {{
-    "ligne": <numéro de ligne>,
-    "colonne_actuelle": "<colonne actuelle>",
-    "colonne_probable": "<nom exact d'une colonne du schéma, ou null si vraiment inconnue>"
-  }}
-]
-""",
-)
+Retourne UNIQUEMENT ce JSON, sans aucun texte avant ou après :
+{{
+  "destinations": [
+    {{
+      "ligne": <int>,
+      "colonne_actuelle": "<colonne actuelle>",
+      "colonne_probable": "<colonne du schéma ou null>"
+    }}
+  ],
+  "anomalies": [
+    {{
+      "ligne": <int>,
+      "colonne_actuelle": "<colonne>",
+      "valeur": "<valeur suspecte>",
+      "colonne_probable": "<colonne destination ou null>",
+      "confiance": <float 0-1>,
+      "raison": "<explication courte>"
+    }}
+  ]
+}}
 
-
-_PROMPT_AMBIGUS = PromptTemplate(
-    input_variables=["schema", "lignes"],
-    template="""Tu es un expert en qualité de données.
-
-Voici le schéma attendu du fichier. Pour chaque colonne : son nom, son type attendu, sa description, et des exemples de valeurs valides si disponibles :
-{schema}
-
-Voici des lignes de données suspectes à analyser :
-{lignes}
-
-Pour chaque cellule dont la valeur semble mal placée dans sa colonne, retourne UNIQUEMENT un tableau JSON.
-N'ajoute aucun texte avant ou après le JSON.
-
-Format attendu :
-[
-  {{
-    "ligne": <numéro de ligne entier>,
-    "colonne_actuelle": "<nom de la colonne actuelle>",
-    "valeur": "<valeur suspecte>",
-    "colonne_probable": "<nom de la colonne où cette valeur devrait être, ou null>",
-    "confiance": <float entre 0 et 1>,
-    "raison": "<explication courte>"
-  }}
-]
-
-Si aucune anomalie n'est détectée, retourne un tableau vide : []
+Si aucune anomalie pour la tâche 2, retourne "anomalies": [].
 """,
 )
 
@@ -129,55 +114,62 @@ def filtrer_cas_evidents(
     return anomalies, lignes_ambigues
 
 
-def enrichir_destinations(
-    anomalies: list[Anomalie], schema: FichierSchema
+def analyser_chunk(
+    anomalies_evidentes: list[Anomalie],
+    lignes_ambigues: pd.DataFrame,
+    schema: FichierSchema,
 ) -> list[Anomalie]:
-    sans_destination = [a for a in anomalies if a.colonne_probable is None]
-    if not sans_destination:
-        return anomalies
+    if not anomalies_evidentes and lignes_ambigues.empty:
+        return []
 
     llm = get_llm()
     parser = JsonOutputParser()
-    chain = _PROMPT_DESTINATIONS | llm | parser
+    chain = _PROMPT_FUSIONNE | llm | parser
 
-    anomalies_json = [
-        {
-            "ligne": a.ligne,
-            "colonne_actuelle": a.colonne_actuelle,
-            "valeur": a.valeur,
-            "raison": a.raison,
-        }
-        for a in sans_destination
-    ]
+    schema_json = json.dumps(
+        [col.model_dump() for col in schema.colonnes], ensure_ascii=False
+    )
+    anomalies_json = json.dumps(
+        [
+            {
+                "ligne": a.ligne,
+                "colonne_actuelle": a.colonne_actuelle,
+                "valeur": a.valeur,
+            }
+            for a in anomalies_evidentes
+        ],
+        ensure_ascii=False,
+    )
+    lignes_json = json.dumps(
+        lignes_ambigues.reset_index().astype(str).to_dict(orient="records"),
+        ensure_ascii=False,
+    )
 
     try:
         resultat = chain.invoke(
             {
-                "schema": json.dumps(
-                    [col.model_dump() for col in schema.colonnes], ensure_ascii=False
-                ),
-                "anomalies": json.dumps(anomalies_json, ensure_ascii=False),
+                "schema": schema_json,
+                "anomalies_evidentes": anomalies_json,
+                "lignes_ambigues": lignes_json,
             }
         )
     except Exception:
-        return anomalies
-
-    destinations: dict[tuple[int, str], str | None] = {
-        (item["ligne"], item["colonne_actuelle"]): item.get("colonne_probable")
-        for item in resultat
-        if isinstance(item, dict)
-    }
+        return anomalies_evidentes
 
     colonnes_valides = {col.nom for col in schema.colonnes}
 
-    resultat_final = []
-    for a in anomalies:
-        if a.colonne_probable is not None:
-            resultat_final.append(a)
-            continue
+    destinations: dict[tuple[int, str], str | None] = {
+        (item["ligne"], item["colonne_actuelle"]): item.get("colonne_probable")
+        for item in resultat.get("destinations", [])
+        if isinstance(item, dict)
+    }
+
+    toutes: list[Anomalie] = []
+
+    for a in anomalies_evidentes:
         dest = destinations.get((a.ligne, a.colonne_actuelle))
         colonne_probable = dest if dest and dest in colonnes_valides else None
-        resultat_final.append(
+        toutes.append(
             a.model_copy(
                 update={
                     "colonne_probable": colonne_probable,
@@ -185,52 +177,26 @@ def enrichir_destinations(
                 }
             )
         )
-    return resultat_final
 
-
-def analyser_cas_ambigus(
-    lignes_ambigues: pd.DataFrame, schema: FichierSchema
-) -> list[Anomalie]:
-    if lignes_ambigues.empty:
-        return []
-
-    llm = get_llm()
-    parser = JsonOutputParser()
-    chain = _PROMPT_AMBIGUS | llm | parser
-
-    lignes_json = lignes_ambigues.reset_index().astype(str).to_dict(orient="records")
-
-    resultat = chain.invoke(
-        {
-            "schema": json.dumps(
-                [col.model_dump() for col in schema.colonnes], ensure_ascii=False
-            ),
-            "lignes": json.dumps(lignes_json, ensure_ascii=False),
-        }
-    )
-
-    anomalies = []
-    for item in resultat:
+    for item in resultat.get("anomalies", []):
         try:
             a = Anomalie(**item)
             if a.confiance < 0.85 or a.colonne_probable is None:
                 a = a.model_copy(update={"necessite_confirmation": True})
-            anomalies.append(a)
+            toutes.append(a)
         except Exception:
             continue
 
-    return anomalies
+    return toutes
 
 
 def detecter_anomalies(df: pd.DataFrame, schema: FichierSchema) -> list[Anomalie]:
-    chunks = decouper_en_chunks(df, taille=30)
+    chunks = decouper_en_chunks(df, taille=50)
     toutes_anomalies: list[Anomalie] = []
 
     for chunk in chunks:
         anomalies_evidentes, lignes_ambigues = filtrer_cas_evidents(chunk, schema)
-        anomalies_evidentes = enrichir_destinations(anomalies_evidentes, schema)
-        anomalies_ambigues = analyser_cas_ambigus(lignes_ambigues, schema)
-        toutes_anomalies.extend(anomalies_evidentes)
-        toutes_anomalies.extend(anomalies_ambigues)
+        anomalies = analyser_chunk(anomalies_evidentes, lignes_ambigues, schema)
+        toutes_anomalies.extend(anomalies)
 
     return toutes_anomalies

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from interface.routers import upload_router, export_router
+from interface.routers import upload_router, analyse_router, export_router
 
 app = FastAPI(
     title="Clean Excel API",
@@ -17,4 +17,5 @@ app.add_middleware(
 )
 
 app.include_router(upload_router)
+app.include_router(analyse_router)
 app.include_router(export_router)
